@@ -29,7 +29,7 @@ jobs:
           docker compose up -d azurite backend frontend
           # Wait for backend health
           for i in {1..30}; do
-            if curl -fsS http://localhost:5000/health >/dev/null; then echo "Backend healthy"; break; fi; sleep 2; done
+            if curl -fsS http://localhost:5050/health >/dev/null; then echo "Backend healthy"; break; fi; sleep 2; done
           # build frontend inside its container if not already (Dockerfile builds at image build step)
           # Frontend served at 4200 already
 
@@ -41,10 +41,11 @@ jobs:
 
       - name: Run tests container (E2E & API)
         env:
-          E2E_BASE_URL: http://frontend:4200
+          # Inside the compose network the frontend container listens on port 80 (mapped to host 4200)
+          E2E_BASE_URL: http://frontend
         run: |
             # Run tests via docker compose so network uses service names
-            docker compose run --rm -e E2E_BASE_URL=http://frontend:4200 tests
+            docker compose run --rm -e E2E_BASE_URL=http://frontend tests
 
       - name: Copy Playwright report from tests container
         if: always()
