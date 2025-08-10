@@ -1,0 +1,103 @@
+name: CI-CD
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+env:
+  RESOURCE_GROUP: ${{ vars.AZ_RESOURCE_GROUP || 'todo-rg' }}
+  LOCATION: ${{ vars.AZ_LOCATION || 'westeurope' }}
+  NAME_PREFIX: ${{ vars.AZ_NAME_PREFIX || 'aztodo' }}
+  ACR_NAME: ${{ vars.AZ_ACR_NAME || 'aztodoreg' }}
+
+jobs:
+  build-test:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write   # needed for OIDC federation
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '9.0.x'
+
+      - name: Backend restore & publish
+        run: |
+          dotnet restore backend/Todo.Api.csproj
+          dotnet publish backend/Todo.Api.csproj -c Release -o backend/publish
+
+      - name: Frontend build
+        working-directory: frontend
+        run: |
+          npm ci --no-audit --no-fund
+          npm run build:prod
+
+      - name: Start compose (azurite+backend+frontend)
+        run: |
+          docker compose up -d azurite backend frontend
+          for i in {1..30}; do curl -sSf http://localhost:4200 >/dev/null && break || sleep 3; done
+
+      - name: E2E tests (Playwright)
+        working-directory: tests
+        run: |
+          npm ci --no-audit --no-fund
+          npx playwright install --with-deps chromium
+          E2E_BASE_URL=http://localhost:4200 npx playwright test --reporter=line
+
+      - name: Shutdown compose
+        if: always()
+        run: docker compose down -v
+
+      - name: Azure Login (OIDC)
+        if: github.ref == 'refs/heads/main'
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Ensure RG & ACR
+        if: github.ref == 'refs/heads/main'
+        run: |
+          az group create -n $RESOURCE_GROUP -l $LOCATION
+          az acr show -n $ACR_NAME || az acr create -n $ACR_NAME -g $RESOURCE_GROUP --sku Basic --admin-enabled false
+
+      - name: Build & Push Images
+        if: github.ref == 'refs/heads/main'
+        run: |
+          ACR_LOGIN_SERVER=$(az acr show -n $ACR_NAME --query loginServer -o tsv)
+          echo "ACR_LOGIN_SERVER=$ACR_LOGIN_SERVER" >> $GITHUB_ENV
+          az acr login -n $ACR_NAME
+          BACKEND_IMAGE=$ACR_LOGIN_SERVER/backend:${GITHUB_SHA}
+          FRONTEND_IMAGE=$ACR_LOGIN_SERVER/frontend:${GITHUB_SHA}
+          echo "BACKEND_IMAGE=$BACKEND_IMAGE" >> $GITHUB_ENV
+          echo "FRONTEND_IMAGE=$FRONTEND_IMAGE" >> $GITHUB_ENV
+          docker build -t $BACKEND_IMAGE backend
+          docker build -t $FRONTEND_IMAGE frontend
+          docker push $BACKEND_IMAGE
+          docker push $FRONTEND_IMAGE
+
+      - name: Deploy Bicep
+        if: github.ref == 'refs/heads/main'
+        run: |
+          az provider register --namespace Microsoft.App --wait
+          az deployment group create \
+            -g $RESOURCE_GROUP \
+            -f infra/bicep/main.bicep \
+            -p namePrefix=$NAME_PREFIX backendImage=$BACKEND_IMAGE frontendImage=$FRONTEND_IMAGE storageConn='${{ secrets.STORAGE_CONNECTION_STRING }}'
+
+      - name: Ensure Table
+        if: github.ref == 'refs/heads/main'
+        run: |
+          az storage table create --name todos --connection-string '${{ secrets.STORAGE_CONNECTION_STRING }}' || true
+
+      - name: Output URL
+        if: github.ref == 'refs/heads/main'
+        run: |
+          FQDN=$(az containerapp show -n ${NAME_PREFIX}-app -g $RESOURCE_GROUP --query properties.configuration.ingress.fqdn -o tsv)
+          echo "Frontend URL: https://$FQDN" >> $GITHUB_STEP_SUMMARY

@@ -28,7 +28,8 @@ test.describe('Todo E2E', () => {
   });
 
   test('add item', async ({ page }) => {
-    await page.fill('input[placeholder="New task"]', 'First task');
+    const unique = 'First task ' + Date.now();
+    await page.fill('input[placeholder="New task"]', unique);
     const items = page.locator('[cdkdrag]');
     const before = await items.count();
     await page.click('button:has-text("Add")');
@@ -37,8 +38,11 @@ test.describe('Todo E2E', () => {
     console.log('Current todo titles after add:', values);
     await expect.poll(async () => {
       const vals = await page.locator('input[name^="title-"]').evaluateAll(els => els.map(e => (e as HTMLInputElement).value));
-      return vals.includes('First task');
+      return vals.includes(unique);
     }).toBeTruthy();
+    // Debug last item HTML
+    const lastHtml = await items.last().evaluate(el => el.innerHTML);
+    console.log('Last item HTML after add:', lastHtml);
   });
 
   test('complete item', async ({ page }) => {
