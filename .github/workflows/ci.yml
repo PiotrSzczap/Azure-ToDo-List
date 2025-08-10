@@ -7,10 +7,10 @@ on:
   workflow_dispatch:
 
 env:
-  # Azure OIDC variables must be defined in repo/environment variables (not secrets required) 
-  AZURE_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
-  AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
-  AZURE_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+  # Azure OIDC values pulled from repository secrets (set by setup script)
+  AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+  AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+  AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
 jobs:
   test:
@@ -115,7 +115,7 @@ jobs:
           echo "Resource Group: ${{ steps.vars.outputs.rg }}"
           echo "Storage Account: ${{ steps.vars.outputs.sa }}"
           az storage table list --account-name ${{ steps.vars.outputs.sa }} -o table || true
-      echo "Storage Connection String stored as output: ${{ steps.storage.outputs.connection_string }}"
+          echo "Storage Connection String stored as output (masked): ${{ steps.storage.outputs.connection_string }}" | sed 's/=.*/=***MASKED***/'
 
     # (Optional) Persist connection string as repo org secret via GitHub API (needs PAT with admin:repo_hook & secrets)
     # - name: Save secret STORAGE_CONN
@@ -188,7 +188,7 @@ jobs:
           RG=${{ steps.vars.outputs.rg }}
           PLAN=${{ steps.plan.outputs.plan }}
           ACR=${{ steps.acr.outputs.acr_name }}
-            TAG=${{ steps.acr.outputs.tag }}
+          TAG=${{ steps.acr.outputs.tag }}
           APP=todo-frontend-${GITHUB_RUN_NUMBER}
           az webapp create -g $RG -p $PLAN -n $APP --deployment-container-image-name $ACR.azurecr.io/frontend:$TAG || echo "WebApp exists"
           az webapp config container set -g $RG -n $APP \
