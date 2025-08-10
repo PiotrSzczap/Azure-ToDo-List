@@ -1,0 +1,212 @@
+name: CI
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+env:
+  # Azure OIDC variables must be defined in repo/environment variables (not secrets required) 
+  AZURE_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+  AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+  AZURE_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+jobs:
+  test:
+    name: Build & Test (Docker Compose)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build images
+        run: |
+          docker compose build --progress plain
+
+      - name: Start stack (detached)
+        run: |
+          docker compose up -d azurite backend frontend
+          # Wait for backend health
+          for i in {1..30}; do
+            if curl -fsS http://localhost:5000/health >/dev/null; then echo "Backend healthy"; break; fi; sleep 2; done
+          # build frontend inside its container if not already (Dockerfile builds at image build step)
+          # Frontend served at 4200 already
+
+      - name: Install Playwright deps (cache browsers)
+        run: |
+          cd tests
+          npm ci || npm install
+          npx playwright install chromium
+
+      - name: Run tests container (E2E & API)
+        env:
+          E2E_BASE_URL: http://frontend:4200
+        run: |
+            # Run tests via docker compose so network uses service names
+            docker compose run --rm -e E2E_BASE_URL=http://frontend:4200 tests
+
+      - name: Copy Playwright report from tests container
+        if: always()
+        run: |
+          # Re-run tests container in dry mode to copy artifacts if needed
+          CID=$(docker create $(docker compose images tests --format json | jq -r '.[0].Name')) || true
+          if [ -n "$CID" ]; then
+            docker cp $CID:/tests/playwright-report ./tests/playwright-report || echo "Report not found"
+            docker rm $CID || true
+          fi
+
+      - name: Upload Playwright report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: tests/playwright-report
+
+      - name: Tear down
+        if: always()
+        run: |
+          docker compose down -v
+
+  deploy:
+    name: Provision Azure Resources
+    runs-on: ubuntu-latest
+    needs: test
+    if: github.ref == 'refs/heads/main'
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Azure Login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ env.AZURE_CLIENT_ID }}
+          tenant-id: ${{ env.AZURE_TENANT_ID }}
+          subscription-id: ${{ env.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Set deployment variables
+        id: vars
+        run: |
+          RG_NAME=rg-todo-${GITHUB_RUN_NUMBER}
+          LOCATION=westeurope
+          SA_NAME=sttodo${GITHUB_RUN_NUMBER}$(echo $RANDOM | tr -dc 'a-z0-9' | head -c4)
+          echo "rg=$RG_NAME" >> $GITHUB_OUTPUT
+          echo "location=$LOCATION" >> $GITHUB_OUTPUT
+          echo "sa=$SA_NAME" >> $GITHUB_OUTPUT
+
+      - name: Create Resource Group
+        run: |
+          az group create -n ${{ steps.vars.outputs.rg }} -l ${{ steps.vars.outputs.location }}
+
+      - name: Create Storage Account + Table
+        id: storage
+        run: |
+          az storage account create -n ${{ steps.vars.outputs.sa }} -g ${{ steps.vars.outputs.rg }} -l ${{ steps.vars.outputs.location }} --sku Standard_LRS --kind StorageV2
+          CONN=$(az storage account show-connection-string -n ${{ steps.vars.outputs.sa }} -g ${{ steps.vars.outputs.rg }} -o tsv)
+          echo "connection_string=$CONN" >> $GITHUB_OUTPUT
+          echo "::add-mask::$CONN"
+          az storage table create --name todos --connection-string "$CONN"
+
+      - name: Output infra summary
+        run: |
+          echo "Resource Group: ${{ steps.vars.outputs.rg }}"
+          echo "Storage Account: ${{ steps.vars.outputs.sa }}"
+          az storage table list --account-name ${{ steps.vars.outputs.sa }} -o table || true
+      echo "Storage Connection String stored as output: ${{ steps.storage.outputs.connection_string }}"
+
+    # (Optional) Persist connection string as repo org secret via GitHub API (needs PAT with admin:repo_hook & secrets)
+    # - name: Save secret STORAGE_CONN
+    #   if: false
+    #   env:
+    #     GH_TOKEN: ${{ secrets.GH_PAT_ADMIN }}
+    #   run: |
+    #     BODY=$(jq -n --arg v "${{ steps.storage.outputs.connection_string }}" '{encrypted_value:$v,key_id:""}')
+    #     echo "Implement secret creation using GH API / CLI here"
+
+      - name: Create ACR & Build/Push Images
+        id: acr
+        run: |
+          RG=${{ steps.vars.outputs.rg }}
+          LOC=${{ steps.vars.outputs.location }}
+          ACR=todocr${GITHUB_RUN_NUMBER}
+          TAG=${GITHUB_SHA::7}
+          echo "Using ACR name: $ACR with tag: $TAG"
+          az acr create -n $ACR -g $RG --sku Basic -l $LOC --query name -o tsv || echo "ACR exists"
+          az acr login -n $ACR
+          docker build -t $ACR.azurecr.io/backend:$TAG backend
+          docker build -t $ACR.azurecr.io/frontend:$TAG frontend
+          docker push $ACR.azurecr.io/backend:$TAG
+          docker push $ACR.azurecr.io/frontend:$TAG
+          echo "acr_name=$ACR" >> $GITHUB_OUTPUT
+          echo "tag=$TAG" >> $GITHUB_OUTPUT
+
+      - name: Enable ACR admin & fetch credentials (demo purpose)
+        id: acrcreds
+        run: |
+          ACR=${{ steps.acr.outputs.acr_name }}
+          az acr update -n $ACR --admin-enabled true
+          REGISTRY_UN=$(az acr credential show -n $ACR --query username -o tsv)
+            REGISTRY_PW=$(az acr credential show -n $ACR --query 'passwords[0].value' -o tsv)
+          echo "::add-mask::$REGISTRY_PW"
+          echo "registry_user=$REGISTRY_UN" >> $GITHUB_OUTPUT
+          echo "registry_pass=$REGISTRY_PW" >> $GITHUB_OUTPUT
+
+      - name: Create App Service Plan
+        id: plan
+        run: |
+          RG=${{ steps.vars.outputs.rg }}
+          PLAN=plan-todo-${GITHUB_RUN_NUMBER}
+          az appservice plan create -g $RG -n $PLAN --sku B1 --is-linux
+          echo "plan=$PLAN" >> $GITHUB_OUTPUT
+
+      - name: Deploy Backend Web App (Container)
+        id: backendapp
+        run: |
+          RG=${{ steps.vars.outputs.rg }}
+          PLAN=${{ steps.plan.outputs.plan }}
+          ACR=${{ steps.acr.outputs.acr_name }}
+          TAG=${{ steps.acr.outputs.tag }}
+          APP=todo-backend-${GITHUB_RUN_NUMBER}
+          az webapp create -g $RG -p $PLAN -n $APP --deployment-container-image-name $ACR.azurecr.io/backend:$TAG || echo "WebApp exists"
+          az webapp config container set -g $RG -n $APP \
+            --docker-custom-image-name $ACR.azurecr.io/backend:$TAG \
+            --docker-registry-server-url https://$ACR.azurecr.io \
+            --docker-registry-server-user ${{ steps.acrcreds.outputs.registry_user }} \
+            --docker-registry-server-password ${{ steps.acrcreds.outputs.registry_pass }}
+          az webapp config appsettings set -g $RG -n $APP --settings \
+            TableStorage__ConnectionString='${{ steps.storage.outputs.connection_string }}' \
+            TableStorage__TableName='todos' \
+            WEBSITES_PORT=8080
+          echo "backend_app=$APP" >> $GITHUB_OUTPUT
+
+      - name: Deploy Frontend Web App (Container)
+        id: frontendapp
+        run: |
+          RG=${{ steps.vars.outputs.rg }}
+          PLAN=${{ steps.plan.outputs.plan }}
+          ACR=${{ steps.acr.outputs.acr_name }}
+            TAG=${{ steps.acr.outputs.tag }}
+          APP=todo-frontend-${GITHUB_RUN_NUMBER}
+          az webapp create -g $RG -p $PLAN -n $APP --deployment-container-image-name $ACR.azurecr.io/frontend:$TAG || echo "WebApp exists"
+          az webapp config container set -g $RG -n $APP \
+            --docker-custom-image-name $ACR.azurecr.io/frontend:$TAG \
+            --docker-registry-server-url https://$ACR.azurecr.io \
+            --docker-registry-server-user ${{ steps.acrcreds.outputs.registry_user }} \
+            --docker-registry-server-password ${{ steps.acrcreds.outputs.registry_pass }}
+          BACKEND_URL=https://${{ steps.backendapp.outputs.backend_app }}.azurewebsites.net
+          az webapp config appsettings set -g $RG -n $APP --settings \
+            API_BASE_URL=$BACKEND_URL \
+            WEBSITES_PORT=4200
+          echo "frontend_app=$APP" >> $GITHUB_OUTPUT
+
+      - name: Deployment Summary
+        run: |
+          echo Backend: https://${{ steps.backendapp.outputs.backend_app }}.azurewebsites.net
+          echo Frontend: https://${{ steps.frontendapp.outputs.frontend_app }}.azurewebsites.net
+          echo ACR: ${{ steps.acr.outputs.acr_name }} Tag: ${{ steps.acr.outputs.tag }}
+
+      # Placeholder: build & push images / deploy container apps / web app
+      # Add steps here when hosting strategy is decided.

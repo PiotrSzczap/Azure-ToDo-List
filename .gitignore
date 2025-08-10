@@ -1,0 +1,20 @@
+# Dotnet
+bin/
+obj/
+*.user
+*.swp
+
+# Node
+node_modules/
+dist/
+
+# Azurite local data
+.azurite/
+
+# Playwright
+playwright-report/
+blob-report/
+trace.zip
+
+# VSCode
+.vscode/

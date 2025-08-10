@@ -1,0 +1,14 @@
+{
+  "name": "azure-todo-e2e",
+  "version": "0.0.1",
+  "private": true,
+  "scripts": {
+    "test": "npx playwright test",
+    "test:headed": "npx playwright test --headed",
+    "codegen": "npx playwright codegen"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.54.2",
+    "typescript": "5.5.4"
+  }
+}
