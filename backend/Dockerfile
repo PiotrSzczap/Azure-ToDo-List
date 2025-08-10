@@ -1,13 +1,29 @@
+############################
 # Build stage
+############################
 FROM mcr.microsoft.com/dotnet/sdk:9.0 AS build
 WORKDIR /src
-COPY . .
-RUN dotnet restore
-RUN dotnet publish -c Release -o /app/publish
 
+# Copy csproj separately for better layer caching
+COPY backend/*.csproj ./backend/
+RUN dotnet restore ./backend/*.csproj
+
+# Copy the remaining source
+COPY backend/. ./backend/
+WORKDIR /src/backend
+
+# Publish (no trimming to avoid issues with Azure.Data.Tables)
+RUN dotnet publish -c Release -o /out --no-restore /p:UseAppHost=false
+
+############################
 # Runtime stage
+############################
 FROM mcr.microsoft.com/dotnet/aspnet:9.0 AS runtime
 WORKDIR /app
-COPY --from=build /app/publish .
+ENV ASPNETCORE_URLS=http://0.0.0.0:8080 \
+	DOTNET_EnableDiagnostics=0 \
+	COMPlus_GCHeapHardLimit=0 \
+	DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=1
 EXPOSE 8080
+COPY --from=build /out .
 ENTRYPOINT ["dotnet", "Todo.Api.dll"]

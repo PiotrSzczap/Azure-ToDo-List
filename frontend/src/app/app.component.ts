@@ -1,4 +1,4 @@
-import { Component, signal, effect } from '@angular/core';
+import { Component, signal, effect, Inject } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { DragDropModule, CdkDragDrop, moveItemInArray } from '@angular/cdk/drag-drop';
@@ -41,8 +41,15 @@ export class AppComponent {
   todos = this._todos;
   private api = '/api/todos';
 
-  constructor(private http: HttpClient){
-    this.refresh();
+  constructor(private http: HttpClient, @Inject('RUNTIME_CONFIG') private cfgPromise: Promise<any>){
+    // Adjust base API dynamically if provided
+    this.cfgPromise.then(cfg => {
+      if (cfg?.apiBaseUrl) {
+        const base = cfg.apiBaseUrl.replace(/\/$/, '');
+        this.api = base + '/api/todos';
+      }
+      this.refresh();
+    });
   }
 
   refresh(){
