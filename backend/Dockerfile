@@ -4,33 +4,14 @@
 FROM mcr.microsoft.com/dotnet/sdk:9.0 AS build
 WORKDIR /src
 
-<<<<<<< HEAD
-<<<<<<< HEAD
 # Copy everything (simplify to ensure restore sees all props/targets)
 COPY . .
 
-# Restore with full context (handles Directory.Build.* or props if added later)
+# Restore dependencies
 RUN dotnet restore
 
 # Publish (avoid trimming to keep reflection-friendly Azure SDK assemblies)
 RUN dotnet publish -c Release -o /out /p:UseAppHost=false
-=======
-=======
->>>>>>> cdcd553451427b8445a492c40726cc875e6b9817
-# Copy csproj separately for better layer caching
-COPY backend/*.csproj ./backend/
-RUN dotnet restore ./backend/*.csproj
-
-# Copy the remaining source
-COPY backend/. ./backend/
-WORKDIR /src/backend
-
-# Publish (no trimming to avoid issues with Azure.Data.Tables)
-RUN dotnet publish -c Release -o /out --no-restore /p:UseAppHost=false
-<<<<<<< HEAD
->>>>>>> cdcd553 (Pipeline fixes.)
-=======
->>>>>>> cdcd553451427b8445a492c40726cc875e6b9817
 
 ############################
 # Runtime stage
