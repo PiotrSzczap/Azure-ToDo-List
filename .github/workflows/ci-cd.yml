@@ -40,14 +40,33 @@ jobs:
       - name: Start compose (azurite+backend+frontend)
         run: |
           docker compose up -d azurite backend frontend
-          for i in {1..30}; do curl -sSf http://localhost:4200 >/dev/null && break || sleep 3; done
+          echo "Waiting for backend health..."
+          for i in {1..30}; do
+            if curl -fsS http://localhost:5050/health >/dev/null 2>&1; then 
+              echo "✅ Backend healthy"; 
+              break; 
+            fi
+            echo "⏳ Backend not ready yet (attempt $i/30)"
+            sleep 3
+          done
+          echo "Waiting for frontend to be ready..."
+          for i in {1..20}; do
+            if curl -fsS http://localhost:4200/ >/dev/null 2>&1; then 
+              echo "✅ Frontend healthy"; 
+              break; 
+            fi
+            echo "⏳ Frontend not ready yet (attempt $i/20)"
+            sleep 3
+          done
+          echo "Stack is ready!"
 
       - name: E2E tests (Playwright)
-        working-directory: tests
         run: |
-          npm ci --no-audit --no-fund
-          npx playwright install --with-deps chromium
-          E2E_BASE_URL=http://localhost:4200 npx playwright test --reporter=line
+          echo "Building tests container..."
+          docker compose build tests
+          echo "Starting tests..."
+          docker compose up --exit-code-from tests tests
+          echo "Tests completed"
 
       - name: Shutdown compose
         if: always()
