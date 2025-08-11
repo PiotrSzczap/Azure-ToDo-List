@@ -89,10 +89,13 @@ test.describe('Todo E2E', () => {
       page.click('button:has-text("Add")')
     ]);
     await expect.poll(async () => await items.count(), { timeout: 10000 }).toBe(initial + 1);
-    const row = items.filter({ hasText: title }).first();
-    const checkbox = row.locator('input[type="checkbox"]');
-    await checkbox.check();
-    await expect(checkbox).toBeChecked();
+  // Wait for the specific newly added item's input value to appear
+  await expect.poll(async () => await page.locator(`[cdkdrag] input[value="${title}"]`).count(), { timeout: 10000 }).toBe(1);
+  const row = page.locator('[cdkdrag]').filter({ has: page.locator(`input[value="${title}"]`) }).first();
+  const checkbox = row.locator('input[type="checkbox"]');
+  await checkbox.waitFor({ state: 'visible', timeout: 5000 });
+  await checkbox.check({ trial: false });
+  await expect(checkbox).toBeChecked();
   });
 
   test('reorder items (drag & drop simulated)', async ({ page }) => {
