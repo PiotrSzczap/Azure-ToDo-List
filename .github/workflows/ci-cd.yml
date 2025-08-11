@@ -84,7 +84,9 @@ jobs:
         if: github.ref == 'refs/heads/main'
         run: |
           az group create -n $RESOURCE_GROUP -l $LOCATION
-          az acr show -n $ACR_NAME || az acr create -n $ACR_NAME -g $RESOURCE_GROUP --sku Basic --admin-enabled false
+          az acr show -n $ACR_NAME || az acr create -n $ACR_NAME -g $RESOURCE_GROUP --sku Basic --admin-enabled true
+          # Ensure admin is enabled (in case ACR already existed)
+          az acr update -n $ACR_NAME --admin-enabled true
 
       - name: Build & Push Images
         if: github.ref == 'refs/heads/main'
@@ -101,6 +103,15 @@ jobs:
           docker push $BACKEND_IMAGE
           docker push $FRONTEND_IMAGE
 
+      - name: Get ACR Credentials
+        if: github.ref == 'refs/heads/main'
+        run: |
+          ACR_USERNAME=$(az acr credential show -n $ACR_NAME --query username -o tsv)
+          ACR_PASSWORD=$(az acr credential show -n $ACR_NAME --query 'passwords[0].value' -o tsv)
+          echo "ACR_USERNAME=$ACR_USERNAME" >> $GITHUB_ENV
+          echo "::add-mask::$ACR_PASSWORD"
+          echo "ACR_PASSWORD=$ACR_PASSWORD" >> $GITHUB_ENV
+
       - name: Deploy Bicep
         if: github.ref == 'refs/heads/main'
         run: |
@@ -108,7 +119,7 @@ jobs:
           az deployment group create \
             -g $RESOURCE_GROUP \
             -f infra/bicep/main.bicep \
-            -p namePrefix=$NAME_PREFIX backendImage=$BACKEND_IMAGE frontendImage=$FRONTEND_IMAGE storageConn='${{ secrets.STORAGE_CONNECTION_STRING }}'
+            -p namePrefix=$NAME_PREFIX backendImage=$BACKEND_IMAGE frontendImage=$FRONTEND_IMAGE storageConn='${{ secrets.STORAGE_CONNECTION_STRING }}' acrServer=$ACR_LOGIN_SERVER acrUsername=$ACR_USERNAME acrPassword=$ACR_PASSWORD
 
       - name: Ensure Table
         if: github.ref == 'refs/heads/main'

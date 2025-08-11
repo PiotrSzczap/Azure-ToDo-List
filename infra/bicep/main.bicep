@@ -14,6 +14,16 @@ param frontendImage string
 @secure()
 param storageConn string
 
+@description('ACR server URL (e.g. myacr.azurecr.io)')
+param acrServer string
+
+@description('ACR username')
+param acrUsername string
+
+@description('ACR password')
+@secure()
+param acrPassword string
+
 @description('Table name to use')
 param tableName string = 'todos'
 
@@ -50,10 +60,21 @@ resource app 'Microsoft.App/containerApps@2023-11-02-preview' = {
         targetPort: 80
         transport: 'auto'
       }
+      registries: [
+        {
+          server: acrServer
+          username: acrUsername
+          passwordSecretRef: 'acr-password'
+        }
+      ]
       secrets: [
         {
           name: 'storage-conn'
           value: storageConn
+        }
+        {
+          name: 'acr-password'
+          value: acrPassword
         }
       ]
     }
