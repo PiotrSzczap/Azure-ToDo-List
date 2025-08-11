@@ -12,11 +12,13 @@ async function loadConfig(): Promise<RuntimeConfig> {
 	return { apiBaseUrl: '' };
 }
 
-const configPromise = loadConfig();
-
-bootstrapApplication(AppComponent, {
-	providers: [
-		provideHttpClient(),
-		{ provide: 'RUNTIME_CONFIG', useFactory: () => configPromise, deps: [] }
-	]
-}).catch(err => console.error(err));
+// Load config first, then bootstrap to ensure components see resolved base URL immediately
+loadConfig().then(cfg => {
+	const configPromise = Promise.resolve(cfg);
+	return bootstrapApplication(AppComponent, {
+		providers: [
+			provideHttpClient(),
+			{ provide: 'RUNTIME_CONFIG', useFactory: () => configPromise, deps: [] }
+		]
+	});
+}).catch(err => console.error('Bootstrap error', err));
