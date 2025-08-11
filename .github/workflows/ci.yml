@@ -27,11 +27,25 @@ jobs:
       - name: Start stack (detached)
         run: |
           docker compose up -d azurite backend frontend
-          # Wait for backend health
+          echo "Waiting for backend health..."
           for i in {1..30}; do
-            if curl -fsS http://localhost:5050/health >/dev/null; then echo "Backend healthy"; break; fi; sleep 2; done
-          # build frontend inside its container if not already (Dockerfile builds at image build step)
-          # Frontend served at 4200 already
+            if curl -fsS http://localhost:5050/health >/dev/null 2>&1; then 
+              echo "✅ Backend healthy"; 
+              break; 
+            fi
+            echo "⏳ Backend not ready yet (attempt $i/30)"
+            sleep 3
+          done
+          echo "Waiting for frontend to be ready..."
+          for i in {1..20}; do
+            if curl -fsS http://localhost:4200/ >/dev/null 2>&1; then 
+              echo "✅ Frontend healthy"; 
+              break; 
+            fi
+            echo "⏳ Frontend not ready yet (attempt $i/20)"
+            sleep 3
+          done
+          echo "Stack is ready!"
 
       - name: Install Playwright deps (cache browsers)
         run: |
@@ -40,12 +54,12 @@ jobs:
           npx playwright install chromium
 
       - name: Run tests container (E2E & API)
-        env:
-          # Inside the compose network the frontend container listens on port 80 (mapped to host 4200)
-          E2E_BASE_URL: http://frontend
         run: |
-            # Run tests via docker compose so network uses service names
-            docker compose run --rm -e E2E_BASE_URL=http://frontend tests
+            echo "Building tests container..."
+            docker compose build tests
+            echo "Starting tests..."
+            docker compose up --exit-code-from tests tests
+            echo "Tests completed"
 
       - name: Copy Playwright report from tests container
         if: always()

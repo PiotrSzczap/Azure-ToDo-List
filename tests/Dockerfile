@@ -6,6 +6,7 @@ RUN npm install
 RUN rm -f /tests/todo.spec.ts || true
 # Copy only necessary test assets
 COPY playwright.config.ts ./
+COPY global-setup.ts ./
 COPY tests ./tests
 COPY tsconfig.json ./
 CMD ["npm", "test"]

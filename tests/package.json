@@ -9,6 +9,7 @@
   },
   "devDependencies": {
     "@playwright/test": "1.54.2",
+    "@types/node": "^20.0.0",
     "typescript": "5.5.4"
   }
 }
